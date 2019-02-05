@@ -3,6 +3,7 @@ import datetime
 from flask import request, jsonify, make_response
 from flask import Blueprint
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.sql import func
 
 from challenge.models import Session, Payment, Patient
 from challenge.run import app
@@ -16,22 +17,7 @@ def payments_get():
     session = Session()
 
     query = session.query(Payment)
-    payment_min = request.args.get('payment_min')
-    payment_max = request.args.get('payment_max')
     external_id = request.args.get('external_id')
-
-    # TODO: to decimal
-    try:
-        payment_min = float(payment_min)
-        query = query.filter(Payment.amount >= float(payment_min))
-    except (ValueError, TypeError, KeyError):
-        pass
-
-    try:
-        payment_max = float(payment_max)
-        query = query.filter(Payment.amount <= float(payment_max))
-    except (ValueError, TypeError, KeyError):
-        pass
 
     if external_id is not None:
         query = query.join(Patient).filter(Patient.external_id == external_id)
@@ -64,8 +50,45 @@ api_patients = Blueprint('api_patients', __name__)
 api_payments = Blueprint('api_payments', __name__)
 
 
-@api_patients.route('/patients', methods=['POST'])
+@api_patients.route('/patients', methods=['POST', 'GET'])
 def patients():
+    method = patients_post if request.method == 'POST' else patients_get
+    return method()
+
+
+def patients_get():
+    session = Session()
+
+    query = (session.query(Patient.id,
+                           Patient.first_name,
+                           Patient.last_name,
+                           func.sum(Payment.amount))
+             .join(Payment)
+             .group_by(Patient.id))
+
+    try:
+        payment_min = float(request.args.get('payment_min'))
+        query = query.having(func.sum(Payment.amount) >= payment_min)
+    except (ValueError, TypeError):
+        pass
+
+    try:
+        payment_max = float(request.args.get('payment_max'))
+        query = query.having(func.sum(Payment.amount) <= payment_max)
+    except (ValueError, TypeError):
+        pass
+
+    patients_raw = query.all()
+
+    answer = [dict(id=patient[0],
+                   first_name=patient[1],
+                   last_name=patient[2],
+                   sum=patient[3]) for patient in patients_raw]
+
+    return make_response(jsonify({'result': answer}))
+
+
+def patients_post():
     session = Session()
     for raw_patient in request.json:
         patient = Patient(first_name=raw_patient.get('firstName'),
